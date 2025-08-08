@@ -1,4 +1,4 @@
-streamlit
-pandas
-matplotlib
-numpy
+streamlit==1.36.0
+pandas==1.5.3   # or 2.x if you updated code for it
+matplotlib==3.9.0
+numpy==<compatible with your pandas/matplotlib>
