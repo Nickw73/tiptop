@@ -151,12 +151,9 @@ def main() -> None:
         use_container_width=True,
     )
 
-    # Visual comparison with horizontal bar chart
+    # Visual comparison with horizontal bar charts
     st.subheader("Visual comparison of key metrics")
-    # Select a subset of metrics to visualize. You can modify this list to
-    # include any metrics you care about.
-    # Display all metrics except red cards (they are very rare). Each tuple is
-    # (column_key, human‑readable label). Feel free to reorder or adjust labels.
+    # List of average metrics to visualize (excluding red cards) with readable labels
     metrics_to_show = [
         ("GoalsScored", "Goals Scored"),
         ("GoalsConceded", "Goals Conceded"),
@@ -171,20 +168,50 @@ def main() -> None:
     metric_names = [label for _, label in metrics_to_show]
     team1_values = [team1_avg[m[0]] for m in metrics_to_show]
     team2_values = [team2_avg[m[0]] for m in metrics_to_show]
-
     y_pos = np.arange(len(metrics_to_show))
     bar_height = 0.35
-    fig, ax = plt.subplots(figsize=(6, 3 + len(metrics_to_show) * 0.3))
-    ax.barh(y_pos - bar_height/2, team1_values, height=bar_height, label=team1, color="#1f77b4")
-    ax.barh(y_pos + bar_height/2, team2_values, height=bar_height, label=team2, color="#d62728")
+    fig, ax = plt.subplots(figsize=(6, 3 + len(metrics_to_show) * 0.35))
+    bars1 = ax.barh(y_pos - bar_height/2, team1_values, height=bar_height, label=team1, color="#1f77b4")
+    bars2 = ax.barh(y_pos + bar_height/2, team2_values, height=bar_height, label=team2, color="#d62728")
     ax.set_yticks(y_pos)
     ax.set_yticklabels(metric_names)
     ax.invert_yaxis()  # highest metric at top
     ax.set_xlabel("Average value per match")
-    ax.set_title(f"{team1} vs {team2}: Key Metrics Comparison")
+    ax.set_title(f"{team1} vs {team2}: Average Metrics Comparison")
     ax.legend(loc="best")
     ax.grid(axis="x", linestyle="--", alpha=0.5)
+    # Annotate bar values with two decimal places
+    for bars, values in [(bars1, team1_values), (bars2, team2_values)]:
+        ax.bar_label(bars, [f"{v:.2f}" for v in values], label_type="edge", padding=3)
     st.pyplot(fig, use_container_width=True)
+
+    # Compute and visualize total metrics across selected seasons
+    team1_records = df[df["Team"] == team1]
+    team2_records = df[df["Team"] == team2]
+    total_metrics = [
+        ("Total Goals", team1_records["GoalsScored"].sum(), team2_records["GoalsScored"].sum()),
+        ("Total Cards", (team1_records["YellowFor"].sum() + team1_records["RedFor"].sum()),
+                        (team2_records["YellowFor"].sum() + team2_records["RedFor"].sum())),
+        ("Total Shots on Target", team1_records["ShotsOnTargetFor"].sum(), team2_records["ShotsOnTargetFor"].sum()),
+        ("Total Corners", team1_records["CornersWon"].sum(), team2_records["CornersWon"].sum()),
+    ]
+    total_names = [name for name, _, _ in total_metrics]
+    team1_totals = [val1 for _, val1, _ in total_metrics]
+    team2_totals = [val2 for _, _, val2 in total_metrics]
+    y_pos_tot = np.arange(len(total_metrics))
+    fig2, ax2 = plt.subplots(figsize=(6, 2 + len(total_metrics) * 0.35))
+    bars1_tot = ax2.barh(y_pos_tot - bar_height/2, team1_totals, height=bar_height, label=team1, color="#1f77b4")
+    bars2_tot = ax2.barh(y_pos_tot + bar_height/2, team2_totals, height=bar_height, label=team2, color="#d62728")
+    ax2.set_yticks(y_pos_tot)
+    ax2.set_yticklabels(total_names)
+    ax2.invert_yaxis()
+    ax2.set_xlabel("Total across selected seasons")
+    ax2.set_title(f"{team1} vs {team2}: Total Metrics Comparison")
+    ax2.legend(loc="best")
+    ax2.grid(axis="x", linestyle="--", alpha=0.5)
+    for bars, values in [(bars1_tot, team1_totals), (bars2_tot, team2_totals)]:
+        ax2.bar_label(bars, [f"{v:.0f}" for v in values], label_type="edge", padding=3)
+    st.pyplot(fig2, use_container_width=True)
 
     # Head‑to‑head match history and averages
     try:
