@@ -208,7 +208,8 @@ def get_head_to_head(df: pd.DataFrame, team1: str, team2: str) -> Tuple[pd.DataF
     if h2h_df.empty:
         raise ValueError(f"No head‑to‑head matches found for {team1} and {team2}")
     # Compute mean only on numeric columns to avoid errors if non‑numeric columns are present.
-    h2h_avg = h2h_df.groupby("Team", numeric_only=True).mean()[[
+    numeric_cols = h2h_df.select_dtypes(include="number").columns
+    h2h_avg = h2h_df.groupby("Team")[numeric_cols].mean()[[
         "GoalsScored", "GoalsConceded", "YellowFor", "YellowAgainst",
         "RedFor", "RedAgainst", "ShotsOnTargetFor", "ShotsOnTargetAgainst",
         "CornersTotal", "CornersWon", "CornersConceded",

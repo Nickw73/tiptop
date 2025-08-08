@@ -277,24 +277,46 @@ def main() -> None:
         "YellowFor", "YellowAgainst", "RedFor", "RedAgainst",
         "ShotsOnTargetFor", "ShotsOnTargetAgainst", "CornersWon", "CornersConceded",
     ]]
+    # Format Date column to YYYY-MM-DD (remove 00:00:00)
+    if "Date" in h2h_display.columns:
+        h2h_display = h2h_display.copy()
+        h2h_display["Date"] = pd.to_datetime(h2h_display["Date"]).dt.strftime("%Y-%m-%d")
     st.dataframe(h2h_display.reset_index(drop=True), use_container_width=True)
 
-    # Display raw match‑level data for the selected fixture history
-    if not raw_combined.empty:
-        mask_raw = (
-            (raw_combined["HomeTeam"] == team1) & (raw_combined["AwayTeam"] == team2) |
-            (raw_combined["HomeTeam"] == team2) & (raw_combined["AwayTeam"] == team1)
-        )
-        raw_h2h = raw_combined[mask_raw].sort_values("Date")
-        if not raw_h2h.empty:
-            st.subheader(f"Raw match data: {team1} vs {team2}")
+    # Toggle to optionally show raw match-level head-to-head data
+    show_raw = st.checkbox("Show raw match data", value=False, key="show_raw_h2h")
+    if show_raw:
+        # Display raw match‑level data for the selected fixture history
+
+        if not raw_combined.empty:
+
+            mask_raw = (
+
+                (raw_combined["HomeTeam"] == team1) & (raw_combined["AwayTeam"] == team2) |
+
+                (raw_combined["HomeTeam"] == team2) & (raw_combined["AwayTeam"] == team1)
+
+            )
+
+            raw_h2h = raw_combined[mask_raw].sort_values("Date")
+
+            if not raw_h2h.empty:
+
+                            st.subheader(f"Raw match data: {team1} vs {team2}")
+            _raw_df = raw_h2h[[
+                        "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "HY", "AY",
+
+                        "HR", "AR", "HST", "AST", "HC", "AC",
+
+                    ]].reset_index(drop=True)
+            if "Date" in _raw_df.columns:
+                _raw_df = _raw_df.copy()
+                _raw_df["Date"] = pd.to_datetime(_raw_df["Date"]).dt.strftime("%Y-%m-%d")
             st.dataframe(
-                raw_h2h[[
-                    "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "HY", "AY",
-                    "HR", "AR", "HST", "AST", "HC", "AC",
-                ]].reset_index(drop=True),
+                _raw_df,
                 use_container_width=True,
             )
+
 
     st.subheader("Head‑to‑head averages")
     st.dataframe(
