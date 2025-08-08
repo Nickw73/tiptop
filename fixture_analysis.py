@@ -152,7 +152,7 @@ def load_premier_league_data(csv_files: List[str]) -> pd.DataFrame:
     return pd.concat(all_records, ignore_index=True)
 
 
-def get_team_average(df: pd.DataFrame, team: str) -> pd.Series:
+def get_team_average(df: pd.DataFrame, team: str, venue: str | None = None) -> pd.Series:
     """Compute average statistics for a given team.
 
     The returned Series contains per‑match averages for goals scored,
@@ -172,6 +172,8 @@ def get_team_average(df: pd.DataFrame, team: str) -> pd.Series:
         Average statistics indexed by metric name.
     """
     team_df = df[df["Team"] == team]
+    if venue in {"Home", "Away"}:
+        team_df = team_df[team_df["HomeAway"] == venue]
     if team_df.empty:
         raise ValueError(f"Team '{team}' not found in dataset")
     return team_df[[
@@ -202,8 +204,11 @@ def get_head_to_head(df: pd.DataFrame, team1: str, team2: str) -> Tuple[pd.DataF
         (1) ``pd.DataFrame`` with the average statistics for each team in those
             encounters (index will be the team names).
     """
-    mask = ((df["Team"] == team1) & (df["Opponent"] == team2)) | \
-           ((df["Team"] == team2) & (df["Opponent"] == team1))
+    mask = (
+           (df["Team"] == team1) & (df["Opponent"] == team2) & (df["HomeAway"] == "Home")
+        ) | (
+           (df["Team"] == team2) & (df["Opponent"] == team1) & (df["HomeAway"] == "Away")
+        )
     h2h_df = df[mask].sort_values("Date").reset_index(drop=True)
     if h2h_df.empty:
         raise ValueError(f"No head‑to‑head matches found for {team1} and {team2}")

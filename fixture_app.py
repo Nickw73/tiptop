@@ -157,10 +157,10 @@ def main() -> None:
         return
 
     # Compute average statistics for each selected team
-    team1_avg = get_team_average(df, team1)
-    team2_avg = get_team_average(df, team2)
+    team1_avg = get_team_average(df, team1, venue="Home")
+    team2_avg = get_team_average(df, team2, venue="Away")
 
-    st.subheader("Average stats across all matches")
+    st.subheader("Average stats (Team 1 Home, Team 2 Away)")
     avg_df = pd.DataFrame([team1_avg, team2_avg], index=[team1, team2])
     st.dataframe(
         avg_df.round(3).rename_axis("Team").reset_index(),
@@ -227,8 +227,8 @@ def main() -> None:
     st.pyplot(fig, use_container_width=True)
 
     # Compute and visualize total metrics across selected seasons
-    team1_records = df[df["Team"] == team1]
-    team2_records = df[df["Team"] == team2]
+    team1_records = df[(df["Team"] == team1) & (df["HomeAway"] == "Home")]
+    team2_records = df[(df["Team"] == team2) & (df["HomeAway"] == "Away")]
     total_metrics = [
         ("Total Goals", team1_records["GoalsScored"].sum(), team2_records["GoalsScored"].sum()),
         ("Total Cards", (team1_records["YellowFor"].sum() + team1_records["RedFor"].sum()),
