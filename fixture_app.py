@@ -153,21 +153,46 @@ def main() -> None:
 
     # Visual comparison with horizontal bar charts
     st.subheader("Visual comparison of key metrics")
-    # List of average metrics to visualize (excluding red cards) with readable labels
+    # Compute additional per‑game totals by combining own and opponent averages.
+    # Total Goals per game = goals scored + goals conceded
+    team1_total_goals_pg = team1_avg["GoalsScored"] + team1_avg["GoalsConceded"]
+    team2_total_goals_pg = team2_avg["GoalsScored"] + team2_avg["GoalsConceded"]
+    # Total Cards per game = yellow and red cards for and against
+    team1_total_cards_pg = (
+        team1_avg["YellowFor"] + team1_avg["YellowAgainst"] +
+        team1_avg.get("RedFor", 0) + team1_avg.get("RedAgainst", 0)
+    )
+    team2_total_cards_pg = (
+        team2_avg["YellowFor"] + team2_avg["YellowAgainst"] +
+        team2_avg.get("RedFor", 0) + team2_avg.get("RedAgainst", 0)
+    )
+    # Total shots on target per game = shots on target for + shots on target against
+    team1_total_shots_pg = team1_avg["ShotsOnTargetFor"] + team1_avg["ShotsOnTargetAgainst"]
+    team2_total_shots_pg = team2_avg["ShotsOnTargetFor"] + team2_avg["ShotsOnTargetAgainst"]
+    # Total corners per game = corners won + corners conceded
+    team1_total_corners_pg = team1_avg["CornersWon"] + team1_avg["CornersConceded"]
+    team2_total_corners_pg = team2_avg["CornersWon"] + team2_avg["CornersConceded"]
+
+    # List of average metrics to visualize (excluding red cards) with readable labels.
+    # Each entry corresponds to a key in team average or a derived per‑game total.
     metrics_to_show = [
-        ("GoalsScored", "Goals Scored"),
-        ("GoalsConceded", "Goals Conceded"),
-        ("YellowFor", "Yellow Cards (For)"),
-        ("YellowAgainst", "Yellow Cards (Against)"),
-        ("ShotsOnTargetFor", "Shots on Target (For)"),
-        ("ShotsOnTargetAgainst", "Shots on Target (Against)"),
-        ("CornersTotal", "Total Corners"),
-        ("CornersWon", "Corners Won"),
-        ("CornersConceded", "Corners Conceded"),
+        ("GoalsScored", "Goals Scored", team1_avg["GoalsScored"], team2_avg["GoalsScored"]),
+        ("GoalsConceded", "Goals Conceded", team1_avg["GoalsConceded"], team2_avg["GoalsConceded"]),
+        ("YellowFor", "Yellow Cards (For)", team1_avg["YellowFor"], team2_avg["YellowFor"]),
+        ("YellowAgainst", "Yellow Cards (Against)", team1_avg["YellowAgainst"], team2_avg["YellowAgainst"]),
+        ("ShotsOnTargetFor", "Shots on Target (For)", team1_avg["ShotsOnTargetFor"], team2_avg["ShotsOnTargetFor"]),
+        ("ShotsOnTargetAgainst", "Shots on Target (Against)", team1_avg["ShotsOnTargetAgainst"], team2_avg["ShotsOnTargetAgainst"]),
+        ("CornersWon", "Corners Won", team1_avg["CornersWon"], team2_avg["CornersWon"]),
+        ("CornersConceded", "Corners Conceded", team1_avg["CornersConceded"], team2_avg["CornersConceded"]),
+        ("CornersTotal", "Total Corners", team1_avg["CornersTotal"], team2_avg["CornersTotal"]),
+        ("TotalGoalsPerGame", "Total Goals per Game", team1_total_goals_pg, team2_total_goals_pg),
+        ("TotalCardsPerGame", "Total Cards per Game", team1_total_cards_pg, team2_total_cards_pg),
+        ("TotalShotsPerGame", "Total Shots on Target per Game", team1_total_shots_pg, team2_total_shots_pg),
+        ("TotalCornersPerGame", "Total Corners per Game", team1_total_corners_pg, team2_total_corners_pg),
     ]
-    metric_names = [label for _, label in metrics_to_show]
-    team1_values = [team1_avg[m[0]] for m in metrics_to_show]
-    team2_values = [team2_avg[m[0]] for m in metrics_to_show]
+    metric_names = [label for _, label, _, _ in metrics_to_show]
+    team1_values = [val1 for _, _, val1, _ in metrics_to_show]
+    team2_values = [val2 for _, _, _, val2 in metrics_to_show]
     y_pos = np.arange(len(metrics_to_show))
     bar_height = 0.35
     fig, ax = plt.subplots(figsize=(6, 3 + len(metrics_to_show) * 0.35))
