@@ -256,10 +256,20 @@ def main() -> None:
 
     # Head‑to‑head match history and averages
     try:
-        h2h_matches, h2h_avg = get_head_to_head(df, team1, team2)
+        # Use get_head_to_head to retrieve the list of matches. We will compute the
+        # averages within this function to avoid issues with pandas versions.
+        h2h_matches, _unused_h2h_avg = get_head_to_head(df, team1, team2)
     except ValueError as e:
         st.error(str(e))
         return
+    # Compute head‑to‑head averages only on numeric columns. This avoids
+    # triggering pandas type errors on object columns in different versions.
+    numeric_cols = [
+        "GoalsScored", "GoalsConceded", "YellowFor", "YellowAgainst",
+        "RedFor", "RedAgainst", "ShotsOnTargetFor", "ShotsOnTargetAgainst",
+        "CornersTotal", "CornersWon", "CornersConceded",
+    ]
+    h2h_avg = h2h_matches.groupby("Team")[numeric_cols].mean()
 
     st.subheader(f"Head‑to‑head matches: {team1} vs {team2}")
     h2h_display = h2h_matches[[
