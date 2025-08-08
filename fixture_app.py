@@ -92,18 +92,34 @@ def main() -> None:
         return
     # Convert selected seasons into CSV paths relative to this script file.
     csv_paths = [str(Path(__file__).parent / season_files[s]) for s in selected_seasons]
-    # Display the resolved file paths and whether they exist to help debug missing files.
-    for p in csv_paths:
-        st.write(f"{p} exists: {Path(p).exists()}")
+    # Optionally, you can print the file paths here for debugging.
+    # (Removed during normal operation.)
 
     # Load the data from CSVs. If the files can't be read this will raise an error,
     # which Streamlit will display in the UI.
     df = load_data(csv_paths)
 
-    # Show the shape of the loaded data and the first few team names to verify it loaded properly.
-    st.write("Data shape:", df.shape)
-    # Show up to the first 10 unique team names
-    st.write("Teams found:", sorted(df["Team"].unique())[:10])
+    # Load the raw CSV files again to obtain match‑level data for head‑to‑head display.
+    # We only extract the columns needed for the raw head‑to‑head table.
+    raw_dfs = []
+    for p in csv_paths:
+        try:
+            raw = pd.read_csv(p)
+        except pd.errors.EmptyDataError:
+            continue
+        # Ensure necessary columns exist, fill missing with zeros
+        needed = [
+            "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "HY", "AY",
+            "HR", "AR", "HST", "AST", "HC", "AC",
+        ]
+        for col in needed:
+            if col not in raw.columns:
+                raw[col] = 0
+        raw["Date"] = pd.to_datetime(raw["Date"], dayfirst=True, errors="coerce")
+        raw_dfs.append(raw[needed])
+    raw_combined = pd.concat(raw_dfs, ignore_index=True) if raw_dfs else pd.DataFrame()
+
+    # Debugging output for data shape and team names has been removed.
 
     # Attempt to derive the list of teams from the processed DataFrame. If the
     # expected 'Team' column is missing or empty, fall back to reading the
@@ -252,6 +268,23 @@ def main() -> None:
         "ShotsOnTargetFor", "ShotsOnTargetAgainst", "CornersWon", "CornersConceded",
     ]]
     st.dataframe(h2h_display.reset_index(drop=True), use_container_width=True)
+
+    # Display raw match‑level data for the selected fixture history
+    if not raw_combined.empty:
+        mask_raw = (
+            (raw_combined["HomeTeam"] == team1) & (raw_combined["AwayTeam"] == team2) |
+            (raw_combined["HomeTeam"] == team2) & (raw_combined["AwayTeam"] == team1)
+        )
+        raw_h2h = raw_combined[mask_raw].sort_values("Date")
+        if not raw_h2h.empty:
+            st.subheader(f"Raw match data: {team1} vs {team2}")
+            st.dataframe(
+                raw_h2h[[
+                    "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "HY", "AY",
+                    "HR", "AR", "HST", "AST", "HC", "AC",
+                ]].reset_index(drop=True),
+                use_container_width=True,
+            )
 
     st.subheader("Head‑to‑head averages")
     st.dataframe(
