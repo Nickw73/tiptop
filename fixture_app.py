@@ -320,31 +320,34 @@ def main() -> None:
             """
         )
 
-        # Build the full fixture list from the loaded data. We take only home
-        # team records (HomeAway == 'H') to avoid duplicates. The resulting
-        # DataFrame contains the date, home team and away team for every match
-        # across the selected seasons. Dates are converted to strings for display.
-        full_fixtures_df = (
-            df[df["HomeAway"] == "H"][["Date", "Team", "Opponent"]]
-            .rename(columns={"Team": "HomeTeam", "Opponent": "AwayTeam"})
-            .sort_values("Date")
-        )
-        full_fixtures_df["Date"] = full_fixtures_df["Date"].dt.date.astype(str)
+        # Build the full fixture list from the raw match data. We rely on the
+        # raw_combined DataFrame loaded earlier, which contains "Date",
+        # "HomeTeam" and "AwayTeam" for every match. This avoids depending on
+        # the processed ``df`` in case it is missing the HomeAway flag.
+        if raw_combined is not None and not raw_combined.empty:
+            full_fixtures_df = raw_combined[["Date", "HomeTeam", "AwayTeam"]].copy()
+            full_fixtures_df["Date"] = full_fixtures_df["Date"].dt.date.astype(str)
+            full_fixtures_df = full_fixtures_df.sort_values("Date")
 
-        # Identify unique match dates (game weeks). Users can select a date to
-        # view predictions for that match day.
-        unique_dates = sorted(full_fixtures_df["Date"].unique())
-        if unique_dates:
-            selected_date = st.selectbox(
-                "Select game week (date)", unique_dates, index=0
-            )
-            fixtures_df = full_fixtures_df[full_fixtures_df["Date"] == selected_date]
+            # Identify unique match dates (game weeks). Users can select a date to
+            # view predictions for that match day.
+            unique_dates = sorted(full_fixtures_df["Date"].unique())
+            if unique_dates:
+                selected_date = st.selectbox(
+                    "Select game week (date)", unique_dates, index=0
+                )
+                fixtures_df = full_fixtures_df[full_fixtures_df["Date"] == selected_date]
+            else:
+                selected_date = None
+                fixtures_df = full_fixtures_df.copy()
+
+            st.subheader("Fixtures for selected date")
+            st.dataframe(fixtures_df.reset_index(drop=True), use_container_width=True)
         else:
-            selected_date = None
-            fixtures_df = full_fixtures_df.copy()
-
-        st.subheader("Fixtures for selected date")
-        st.dataframe(fixtures_df.reset_index(drop=True), use_container_width=True)
+            st.info(
+                "No raw fixture data available. Please ensure the CSV files are present and correctly named."
+            )
+            fixtures_df = pd.DataFrame(columns=["Date", "HomeTeam", "AwayTeam"])  # empty fallback
 
         # Compute predictions for each fixture on the selected date. If no date is
         # selected, this will include all fixtures.
