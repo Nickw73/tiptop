@@ -181,7 +181,7 @@ def get_team_average(df: pd.DataFrame, team: str) -> pd.Series:
     ]].mean()
 
 
-def get_head_to_head(df: pd.DataFrame, team1: str, team2: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def get_head_to_head(df: pd.DataFrame, team1: str, team2: str, mode: str = "home_only") -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Retrieve head‑to‑head matches and average statistics for two teams.
 
     Parameters
@@ -202,15 +202,13 @@ def get_head_to_head(df: pd.DataFrame, team1: str, team2: str) -> Tuple[pd.DataF
         (1) ``pd.DataFrame`` with the average statistics for each team in those
             encounters (index will be the team names).
     """
-    mask = (
-           (df["Team"] == team1) & (df["Opponent"] == team2) & (df["HomeAway"] == "Home")
-        )
+    mask = ((df["Team"] == team1) & (df["Opponent"] == team2)) | \
+           ((df["Team"] == team2) & (df["Opponent"] == team1))
     h2h_df = df[mask].sort_values("Date").reset_index(drop=True)
     if h2h_df.empty:
         raise ValueError(f"No head‑to‑head matches found for {team1} and {team2}")
     # Compute mean only on numeric columns to avoid errors if non‑numeric columns are present.
-    numeric_cols = h2h_df.select_dtypes(include="number").columns
-    h2h_avg = h2h_df.groupby("Team")[numeric_cols].mean()[[
+    h2h_avg = h2h_df.groupby("Team", numeric_only=True).mean()[[
         "GoalsScored", "GoalsConceded", "YellowFor", "YellowAgainst",
         "RedFor", "RedAgainst", "ShotsOnTargetFor", "ShotsOnTargetAgainst",
         "CornersTotal", "CornersWon", "CornersConceded",
