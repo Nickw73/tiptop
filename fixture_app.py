@@ -320,24 +320,39 @@ def main() -> None:
             """
         )
 
-        # Define a sample set of upcoming fixtures. In a production setting,
-        # you could fetch these from an API or a maintained data source.
-        upcoming_fixtures = [
-            {"Date": "2025-08-10", "HomeTeam": "Newcastle", "AwayTeam": "Aston Villa"},
-            {"Date": "2025-08-11", "HomeTeam": "Liverpool", "AwayTeam": "Chelsea"},
-            {"Date": "2025-08-12", "HomeTeam": "Everton", "AwayTeam": "Wolves"},
-        ]
+        # Build the full fixture list from the loaded data. We take only home
+        # team records (HomeAway == 'H') to avoid duplicates. The resulting
+        # DataFrame contains the date, home team and away team for every match
+        # across the selected seasons. Dates are converted to strings for display.
+        full_fixtures_df = (
+            df[df["HomeAway"] == "H"][["Date", "Team", "Opponent"]]
+            .rename(columns={"Team": "HomeTeam", "Opponent": "AwayTeam"})
+            .sort_values("Date")
+        )
+        full_fixtures_df["Date"] = full_fixtures_df["Date"].dt.date.astype(str)
 
-        # Convert to DataFrame for display and processing
-        fixtures_df = pd.DataFrame(upcoming_fixtures)
-        st.subheader("Sample upcoming fixtures")
-        st.dataframe(fixtures_df, use_container_width=True)
+        # Identify unique match dates (game weeks). Users can select a date to
+        # view predictions for that match day.
+        unique_dates = sorted(full_fixtures_df["Date"].unique())
+        if unique_dates:
+            selected_date = st.selectbox(
+                "Select game week (date)", unique_dates, index=0
+            )
+            fixtures_df = full_fixtures_df[full_fixtures_df["Date"] == selected_date]
+        else:
+            selected_date = None
+            fixtures_df = full_fixtures_df.copy()
 
-        # Compute predictions for each fixture
+        st.subheader("Fixtures for selected date")
+        st.dataframe(fixtures_df.reset_index(drop=True), use_container_width=True)
+
+        # Compute predictions for each fixture on the selected date. If no date is
+        # selected, this will include all fixtures.
         prediction_rows = []
-        for fixture in upcoming_fixtures:
-            home = fixture["HomeTeam"]
-            away = fixture["AwayTeam"]
+        for _, row in fixtures_df.iterrows():
+            home = row["HomeTeam"]
+            away = row["AwayTeam"]
+            date_str = row["Date"]
             # Skip prediction if either team is not in our dataset
             if home not in teams or away not in teams:
                 continue
@@ -358,8 +373,7 @@ def main() -> None:
             pred_yellow_away = (away_avg["YellowFor"] + home_avg["YellowAgainst"]) / 2
 
             # Compute probabilities for each metric: probability that home team has
-            # more of the metric = predicted value / (sum of both teams). We
-            # express this as a percentage.
+            # more of the metric = predicted value / (sum of both teams).
             def compute_probs(val1: float, val2: float) -> tuple[float, float]:
                 total = val1 + val2
                 if total <= 0:
@@ -373,7 +387,7 @@ def main() -> None:
 
             prediction_rows.append({
                 "Fixture": f"{home} vs {away}",
-                "Date": fixture["Date"],
+                "Date": date_str,
                 "Predicted Goals (Home)": round(pred_goals_home, 2),
                 "Predicted Goals (Away)": round(pred_goals_away, 2),
                 "Prob Home More Goals": f"{p_goals_home * 100:.0f}%",
@@ -389,7 +403,7 @@ def main() -> None:
             })
 
         if prediction_rows:
-            st.subheader("Predictions for upcoming fixtures")
+            st.subheader("Predictions for fixtures on selected date")
             predictions_df = pd.DataFrame(prediction_rows)
             st.dataframe(predictions_df, use_container_width=True)
         else:
