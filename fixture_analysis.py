@@ -1,255 +1,379 @@
 """
-fixture_analysis.py
-====================
+Premier League Fixture Analysis & Predictions App
+- Team Analysis (multi-season averages, head-to-head table, charts)
+- Upcoming Fixtures (2025/26) with per-game predictions & simple probabilities
 
-This script provides utility functions to load Premier League match statistics
-for multiple seasons and compute average performance metrics for individual
-teams as well as head‑to‑head summaries between any two teams. The data used
-in these calculations comes from the CSV files provided by
-`football‑data.co.uk`. Each CSV contains match statistics with columns such as
-home/away goals, shots on target, corners and card counts. For details on
-the meaning of these columns, see the notes at
-`http://www.football-data.co.uk/notes.txt`, which explain that fields like
-``HY``/``AY`` are yellow cards for home/away teams, ``HR``/``AR`` are red
-cards, ``HST``/``AST`` are shots on target and ``HC``/``AC`` are corners【415788315280667†L22-L43】.
-
-Functions
----------
-* ``load_premier_league_data(csv_files: list[str]) -> pd.DataFrame``: Load one
-  or more season CSV files into a unified DataFrame with one record per
-  team per match. Each record includes goals scored and conceded, shots on
-  target, corners won/conceded and card counts.
-* ``get_team_average(df: pd.DataFrame, team: str) -> pd.Series``: Compute
-  average statistics for a given team across all matches in the provided
-  DataFrame.
-* ``get_head_to_head(df: pd.DataFrame, team1: str, team2: str) -> tuple``:
-  Return both the individual match records where the two teams faced each
-  other and the average statistics for each side in those encounters.
-
-Example
--------
-
-To compute average statistics for Everton and Newcastle across the past three
-seasons and their head‑to‑head averages, run this module directly:
-
-.. code-block:: bash
-
-    python fixture_analysis.py --team1 Everton --team2 Newcastle \
-        --csv E0.csv E0_2324.csv E0_2223.csv
-
-This will print each team’s overall averages and their head‑to‑head
-performance.
+Place this file alongside:
+  - fixture_analysis.py (with load_premier_league_data, etc.)
+  - Your historical CSVs (E0.csv, E0_2324.csv, E0_2223.csv)
+  - epl-2025.json (optional; the app can fetch or accept upload if missing)
 """
 
-from __future__ import annotations
-
-import argparse
 from pathlib import Path
-from typing import List, Tuple
+import os
+import json
+from datetime import datetime, timezone
+from math import exp
 
+import numpy as np
 import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
+import requests
+
+# Local analysis helpers
+from fixture_analysis import load_premier_league_data, get_team_average
 
 
-def _prepare_match_records(df: pd.DataFrame) -> pd.DataFrame:
-    """Internal helper to convert a raw match DataFrame into team‑centric records.
+# ---------- Utility: pretty title ----------
+st.set_page_config(page_title="PL Analysis & Predictions", layout="wide")
 
-    Each match in the raw CSV contains statistics for both the home and away
-    sides. This function produces a long‑format DataFrame where each row
-    represents a team’s view of a single match with columns for goals scored,
-    goals conceded, cards, shots on target and corners. Missing columns in
-    older seasons are filled with zeros.
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Raw match data with at least the columns documented in the notes file
-        at football‑data.co.uk【415788315280667†L22-L43】.
+# ---------- Sidebar Navigation ----------
+page = st.sidebar.selectbox(
+    "Page",
+    ["Team Analysis", "Upcoming Fixtures (2025/26)"]
+)
 
-    Returns
-    -------
-    pandas.DataFrame
-        Long‑format DataFrame with one record per team per match.
+
+# ---------- Season selection helper ----------
+SEASON_TO_FILE = {
+    "2024-25": "E0.csv",
+    "2023-24": "E0_2324.csv",
+    "2022-23": "E0_2223.csv",
+}
+DEFAULT_SEASONS = ["2024-25", "2023-24", "2022-23"]
+
+
+def season_file_paths(selected_seasons):
+    base = Path(__file__).parent
+    return [str(base / SEASON_TO_FILE[s]) for s in selected_seasons if s in SEASON_TO_FILE]
+
+
+# ---------- Team name normalisation ----------
+NORMALISE_MAP = {
+    # common variants between feeds & football-data CSVs
+    "manchester united": "Man United",
+    "manchester utd": "Man United",
+    "man united": "Man United",
+    "man utd": "Man United",
+    "manchester city": "Man City",
+    "man city": "Man City",
+    "wolves": "Wolves",
+    "wolverhampton wanderers": "Wolves",
+    "newcastle": "Newcastle",
+    "newcastle united": "Newcastle",
+    "brighton & hove albion": "Brighton",
+    "brighton": "Brighton",
+    "nottingham forest": "Nott'm Forest",
+    "nottm forest": "Nott'm Forest",
+    "tottenham hotspur": "Tottenham",
+    "spurs": "Tottenham",
+    "west ham united": "West Ham",
+    "west ham": "West Ham",
+    "leeds united": "Leeds",
+    "leicester city": "Leicester",
+    "sheffield united": "Sheffield United",
+    "afc bournemouth": "Bournemouth",
+    "liverpool": "Liverpool",
+    "everton": "Everton",
+    "aston villa": "Aston Villa",
+    "arsenal": "Arsenal",
+    "chelsea": "Chelsea",
+    "brentford": "Brentford",
+    "crystal palace": "Crystal Palace",
+    "fulham": "Fulham",
+    "burnley": "Burnley",
+    "southampton": "Southampton",
+    "ipswich town": "Ipswich Town",
+    "ipswich": "Ipswich Town",
+}
+
+def norm_team(name: str) -> str:
+    key = (name or "").strip().lower()
+    return NORMALISE_MAP.get(key, name)
+
+
+# ---------- Prediction helpers ----------
+def sigmoid_prob(home_val: float, away_val: float, k: float = 1.0) -> float:
+    """Return probability (0..1) that home > away, based on difference."""
+    diff = float(home_val) - float(away_val)
+    return 1.0 / (1.0 + exp(-k * diff))
+
+
+def metric_prediction(avg_home: dict, avg_away: dict):
+    """Return predicted per-game metrics for home/away (goals, corners, shots, yellows).
+    Uses average of home 'for' and away 'against'. Excludes red cards by design.
     """
-    # Ensure essential columns exist; fill missing ones with zeros.
-    columns_needed = [
-        "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG",
-        "HY", "AY", "HR", "AR", "HST", "AST", "HC", "AC",
+    def avg_pair(hkey_for, akey_against):
+        return (float(avg_home.get(hkey_for, 0.0)) + float(avg_away.get(akey_against, 0.0))) / 2.0
+
+    pred_goals_h = avg_pair("GoalsScored", "GoalsConceded")
+    pred_goals_a = avg_pair("GoalsConceded", "GoalsScored")
+
+    pred_corners_h = avg_pair("CornersWon", "CornersConceded")
+    pred_corners_a = avg_pair("CornersConceded", "CornersWon")
+
+    pred_sot_h = avg_pair("ShotsOnTargetFor", "ShotsOnTargetAgainst")
+    pred_sot_a = avg_pair("ShotsOnTargetAgainst", "ShotsOnTargetFor")
+
+    pred_yellow_h = avg_pair("YellowFor", "YellowAgainst")
+    pred_yellow_a = avg_pair("YellowAgainst", "YellowFor")
+
+    return {
+        "GoalsH": pred_goals_h, "GoalsA": pred_goals_a,
+        "CornersH": pred_corners_h, "CornersA": pred_corners_a,
+        "SOTH": pred_sot_h, "SOTA": pred_sot_a,
+        "YellowH": pred_yellow_h, "YellowA": pred_yellow_a,
+    }
+
+
+# ---------- Load historical data ----------
+with st.sidebar.expander("Season filter"):
+    selected_seasons = st.multiselect(
+        "Include seasons",
+        options=list(SEASON_TO_FILE.keys()),
+        default=DEFAULT_SEASONS
+    )
+
+csv_paths = season_file_paths(selected_seasons)
+if not csv_paths:
+    st.error("No seasons selected.")
+    st.stop()
+
+df = load_premier_league_data(csv_paths)  # team-centric records
+
+
+# ---------- TEAM ANALYSIS PAGE ----------
+if page == "Team Analysis":
+    st.title("Team Analysis")
+
+    teams = sorted(df["Team"].dropna().unique())
+    col1, col2 = st.columns(2)
+    with col1:
+        team1 = st.selectbox("Select Team 1", teams, index=0 if teams else None)
+    with col2:
+        default_index = 1 if len(teams) > 1 else 0
+        team2 = st.selectbox("Select Team 2", teams, index=default_index)
+
+    if not team1 or not team2:
+        st.warning("Please select two teams.")
+        st.stop()
+    if team1 == team2:
+        st.warning("Please select two different teams to compare.")
+        st.stop()
+
+    # Averages for both teams
+    team1_avg = get_team_average(df, team1)
+    team2_avg = get_team_average(df, team2)
+
+    st.subheader("Average stats across selected seasons")
+    avg_df = pd.DataFrame([team1_avg, team2_avg], index=[team1, team2])
+    st.dataframe(avg_df.round(3).rename_axis("Team").reset_index(), use_container_width=True)
+
+    # Visual comparison with bar chart (includes per-game totals; excludes red cards)
+    st.subheader("Visual comparison (per-game averages)")
+    metrics_to_show = [
+        ("GoalsScored", "Goals Scored"),
+        ("GoalsConceded", "Goals Conceded"),
+        ("YellowFor", "Yellow Cards (For)"),
+        ("YellowAgainst", "Yellow Cards (Against)"),
+        ("ShotsOnTargetFor", "Shots on Target (For)"),
+        ("ShotsOnTargetAgainst", "Shots on Target (Against)"),
+        ("CornersWon", "Corners Won"),
+        ("CornersConceded", "Corners Conceded"),
     ]
-    for col in columns_needed:
-        if col not in df.columns:
-            df[col] = 0
+    # Add per-game totals (won+conceded) for goals, cards (yellow), shots on target, corners
+    team1_totals = {
+        "Total Goals / Game": team1_avg["GoalsScored"] + team1_avg["GoalsConceded"],
+        "Total Cards / Game": team1_avg["YellowFor"] + team1_avg["YellowAgainst"],
+        "Total Shots on Target / Game": team1_avg["ShotsOnTargetFor"] + team1_avg["ShotsOnTargetAgainst"],
+        "Total Corners / Game": team1_avg["CornersWon"] + team1_avg["CornersConceded"],
+    }
+    team2_totals = {
+        "Total Goals / Game": team2_avg["GoalsScored"] + team2_avg["GoalsConceded"],
+        "Total Cards / Game": team2_avg["YellowFor"] + team2_avg["YellowAgainst"],
+        "Total Shots on Target / Game": team2_avg["ShotsOnTargetFor"] + team2_avg["ShotsOnTargetAgainst"],
+        "Total Corners / Game": team2_avg["CornersWon"] + team2_avg["CornersConceded"],
+    }
 
-    # Convert date column to datetime (errors='coerce' handles invalid dates)
-    df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+    team1_values = [team1_avg[k] for k, _ in metrics_to_show] + list(team1_totals.values())
+    team2_values = [team2_avg[k] for k, _ in metrics_to_show] + list(team2_totals.values())
+    labels = [lbl for _, lbl in metrics_to_show] + list(team1_totals.keys())
 
-    records = []
-    for _, row in df.iterrows():
-        # Home side perspective
-        records.append({
-            "Date": row["Date"],
-            "Team": row["HomeTeam"],
-            "Opponent": row["AwayTeam"],
-            "HomeAway": "Home",
-            "GoalsScored": row["FTHG"],
-            "GoalsConceded": row["FTAG"],
-            "YellowFor": row["HY"],
-            "YellowAgainst": row["AY"],
-            "RedFor": row["HR"],
-            "RedAgainst": row["AR"],
-            "ShotsOnTargetFor": row["HST"],
-            "ShotsOnTargetAgainst": row["AST"],
-            "CornersTotal": row["HC"] + row["AC"],
-            "CornersWon": row["HC"],
-            "CornersConceded": row["AC"],
-        })
-        # Away side perspective
-        records.append({
-            "Date": row["Date"],
-            "Team": row["AwayTeam"],
-            "Opponent": row["HomeTeam"],
-            "HomeAway": "Away",
-            "GoalsScored": row["FTAG"],
-            "GoalsConceded": row["FTHG"],
-            "YellowFor": row["AY"],
-            "YellowAgainst": row["HY"],
-            "RedFor": row["AR"],
-            "RedAgainst": row["HR"],
-            "ShotsOnTargetFor": row["AST"],
-            "ShotsOnTargetAgainst": row["HST"],
-            "CornersTotal": row["HC"] + row["AC"],
-            "CornersWon": row["AC"],
-            "CornersConceded": row["HC"],
-        })
+    y_pos = np.arange(len(labels))
+    bar_height = 0.35
+    fig, ax = plt.subplots(figsize=(7.0, 3 + len(labels) * 0.35))
+    bars1 = ax.barh(y_pos - bar_height / 2, team1_values, height=bar_height, label=team1)
+    bars2 = ax.barh(y_pos + bar_height / 2, team2_values, height=bar_height, label=team2)
 
-    return pd.DataFrame(records)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Per-game average")
+    ax.legend()
 
+    # Annotate bars with numeric values (2 dp)
+    for bars in (bars1, bars2):
+        for b in bars:
+            w = b.get_width()
+            ax.text(
+                w + (0.01 if w >= 0 else -0.01),
+                b.get_y() + b.get_height() / 2,
+                f"{w:.2f}",
+                va="center"
+            )
 
-def load_premier_league_data(csv_files: List[str]) -> pd.DataFrame:
-    """Load one or more Premier League CSV files and combine them.
+    st.pyplot(fig, clear_figure=True)
 
-    Parameters
-    ----------
-    csv_files : list of str
-        Paths to CSV files downloaded from `football‑data.co.uk`. Each file
-        should be from the same division (e.g. E0 for the Premier League) but
-        can represent different seasons.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Combined match records with one row per team per match.
-    """
-    all_records = []
-    for path in csv_files:
-        try:
-            df = pd.read_csv(path)
-        except pd.errors.EmptyDataError:
-            # Skip files that are empty or contain no columns. This can happen
-            # if an empty file was accidentally created or downloaded.
-            continue
-        match_records = _prepare_match_records(df)
-        all_records.append(match_records)
-    return pd.concat(all_records, ignore_index=True)
-
-
-def get_team_average(df: pd.DataFrame, team: str) -> pd.Series:
-    """Compute average statistics for a given team.
-
-    The returned Series contains per‑match averages for goals scored,
-    goals conceded, yellow/red cards, shots on target and corners.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Long‑format DataFrame of match records produced by
-        ``load_premier_league_data``.
-    team : str
-        Name of the team as it appears in the data.
-
-    Returns
-    -------
-    pandas.Series
-        Average statistics indexed by metric name.
-    """
-    team_df = df[df["Team"] == team]
-    if team_df.empty:
-        raise ValueError(f"Team '{team}' not found in dataset")
-    return team_df[[
-        "GoalsScored", "GoalsConceded", "YellowFor", "YellowAgainst",
-        "RedFor", "RedAgainst", "ShotsOnTargetFor", "ShotsOnTargetAgainst",
-        "CornersTotal", "CornersWon", "CornersConceded",
-    ]].mean()
-
-
-def get_head_to_head(df: pd.DataFrame, team1: str, team2: str, mode: str = "home_only") -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Retrieve head‑to‑head matches and average statistics for two teams.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Long‑format DataFrame of match records.
-    team1 : str
-        Name of the first team.
-    team2 : str
-        Name of the second team.
-
-    Returns
-    -------
-    tuple
-        A tuple containing:
-        (0) ``pd.DataFrame`` of all matches where the two teams faced each other,
-        sorted by date; and
-        (1) ``pd.DataFrame`` with the average statistics for each team in those
-            encounters (index will be the team names).
-    """
-    mask = ((df["Team"] == team1) & (df["Opponent"] == team2)) | \
-           ((df["Team"] == team2) & (df["Opponent"] == team1))
-    h2h_df = df[mask].sort_values("Date").reset_index(drop=True)
-    if h2h_df.empty:
-        raise ValueError(f"No head‑to‑head matches found for {team1} and {team2}")
-    # Compute mean only on numeric columns to avoid errors if non‑numeric columns are present.
-    h2h_avg = h2h_df.groupby("Team", numeric_only=True).mean()[[
-        "GoalsScored", "GoalsConceded", "YellowFor", "YellowAgainst",
-        "RedFor", "RedAgainst", "ShotsOnTargetFor", "ShotsOnTargetAgainst",
-        "CornersTotal", "CornersWon", "CornersConceded",
+    # Head-to-head table (raw rows)
+    st.subheader(f"Head-to-head matches: {team1} vs {team2}")
+    h2h = df[((df["Team"] == team1) & (df["Opponent"] == team2)) |
+             ((df["Team"] == team2) & (df["Opponent"] == team1))].copy()
+    h2h = h2h.sort_values("Date")
+    h2h_display = h2h[[
+        "Date", "Team", "Opponent", "HomeAway",
+        "GoalsScored", "GoalsConceded",
+        "YellowFor", "YellowAgainst",
+        "RedFor", "RedAgainst",
+        "ShotsOnTargetFor", "ShotsOnTargetAgainst",
+        "CornersWon", "CornersConceded",
     ]]
-    return h2h_df, h2h_avg
+    st.dataframe(h2h_display.reset_index(drop=True), use_container_width=True)
 
+# ---------- UPCOMING FIXTURES PAGE ----------
+elif page == "Upcoming Fixtures (2025/26)":
+    st.title("Upcoming Fixtures (2025/26) & Predictions")
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Compute average team and head‑to‑head statistics from Premier League data"
-    )
-    parser.add_argument(
-        "--csv", nargs="+", required=True,
-        help="Paths to Premier League CSV files (e.g. E0.csv E0_2324.csv E0_2223.csv)"
-    )
-    parser.add_argument(
-        "--team1", required=True, help="Name of the first team"
-    )
-    parser.add_argument(
-        "--team2", required=True, help="Name of the second team"
-    )
-    args = parser.parse_args()
-    # Expand relative paths
-    csv_paths = [str(Path(p).expanduser()) for p in args.csv]
-    df = load_premier_league_data(csv_paths)
-    # Overall averages
-    team1_avg = get_team_average(df, args.team1)
-    team2_avg = get_team_average(df, args.team2)
-    print(f"Average stats for {args.team1} across provided seasons:\n")
-    print(team1_avg.to_string())
-    print("\n--------------------------------\n")
-    print(f"Average stats for {args.team2} across provided seasons:\n")
-    print(team2_avg.to_string())
-    print("\n--------------------------------\n")
-    # Head‑to‑head
-    h2h_df, h2h_avg = get_head_to_head(df, args.team1, args.team2)
-    print(f"Head‑to‑head match history between {args.team1} and {args.team2} (dates ascending):\n")
-    print(h2h_df[["Date", "Team", "Opponent", "GoalsScored", "GoalsConceded", "YellowFor", "YellowAgainst", "RedFor", "RedAgainst", "ShotsOnTargetFor", "ShotsOnTargetAgainst", "CornersWon", "CornersConceded"]])
-    print("\nHead‑to‑head averages:\n")
-    print(h2h_avg)
+    def load_fixtures_json():
+        """Load fixtures from local file, or fetch, or upload."""
+        base = Path(__file__).parent
+        local_path = base / "epl-2025.json"
 
+        # 1) Local
+        if local_path.exists():
+            try:
+                with open(local_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                st.warning(f"Error reading local fixtures: {e}")
 
-if __name__ == "__main__":
-    main()
+        # 2) Try fetch (desktop UA)
+        st.info("Local fixtures not found — attempting to fetch official feed…")
+        try:
+            url = "https://fixturedownload.com/feed/json/epl-2025"
+            headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+            r = requests.get(url, headers=headers, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                # Save a local copy
+                try:
+                    with open(local_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False)
+                    st.success("Fixtures fetched and saved to epl-2025.json.")
+                except Exception:
+                    # saving is optional; continue anyway
+                    pass
+                return data
+            else:
+                st.warning(f"Fetch failed (status {r.status_code}). You can upload the JSON below.")
+        except Exception as e:
+            st.warning(f"Fetch error: {e}. You can upload the JSON below.")
+
+        # 3) Upload
+        uploaded = st.file_uploader("Upload epl-2025.json", type=["json"])
+        if uploaded is not None:
+            try:
+                data = json.load(uploaded)
+                return data
+            except Exception as e:
+                st.error(f"Uploaded file isn't valid JSON: {e}")
+                return None
+        return None
+
+    fixtures_data = load_fixtures_json()
+    if not fixtures_data:
+        st.stop()
+
+    # Normalise into DataFrame
+    fx = pd.DataFrame(fixtures_data)
+    # Ensure required columns exist
+    needed = {"RoundNumber", "DateUtc", "HomeTeam", "AwayTeam"}
+    if not needed.issubset(set(fx.columns.str.strip())):
+        st.error("Fixture JSON missing required keys: RoundNumber, DateUtc, HomeTeam, AwayTeam")
+        st.stop()
+
+    # Parse times and filter to future fixtures (UTC comparison)
+    fx["DateUtc"] = pd.to_datetime(fx["DateUtc"], utc=True, errors="coerce")
+    fx = fx.dropna(subset=["DateUtc"])
+    now_utc = pd.Timestamp.utcnow().tz_localize("UTC")
+    future_fx = fx[fx["DateUtc"] >= now_utc].copy()
+    if future_fx.empty:
+        st.info("No future fixtures found in the file. Showing all fixtures for reference.")
+        future_fx = fx.copy()
+
+    # Round selection
+    rounds = sorted(future_fx["RoundNumber"].dropna().astype(int).unique().tolist())
+    default_round = rounds[0] if rounds else 1
+    selected_round = st.selectbox("Select Gameweek (RoundNumber)", rounds or [default_round], index=0)
+
+    gw = future_fx[future_fx["RoundNumber"].astype(int) == int(selected_round)].copy()
+    if gw.empty:
+        st.warning("No fixtures for that round in the future filter; showing this round from full fixtures.")
+        gw = fx[fx["RoundNumber"].astype(int) == int(selected_round)].copy()
+
+    # Build predictions
+    rows = []
+    for _, row in gw.iterrows():
+        home = norm_team(str(row["HomeTeam"]))
+        away = norm_team(str(row["AwayTeam"]))
+
+        # Compute averages from historical df
+        # If a team is newly promoted and not in df, skip predictions
+        try:
+            avg_home = get_team_average(df, home)
+            avg_away = get_team_average(df, away)
+        except Exception:
+            avg_home, avg_away = None, None
+
+        pred = None
+        probs = {}
+        if avg_home and avg_away:
+            pred = metric_prediction(avg_home, avg_away)
+            # Simple probabilities: chance home > away for each metric
+            probs = {
+                "P(Home more Goals)": sigmoid_prob(pred["GoalsH"], pred["GoalsA"]),
+                "P(Home more Corners)": sigmoid_prob(pred["CornersH"], pred["CornersA"]),
+                "P(Home more SOT)": sigmoid_prob(pred["SOTH"], pred["SOTA"]),
+                "P(Home more Yellows)": sigmoid_prob(pred["YellowH"], pred["YellowA"]),
+            }
+
+        rows.append({
+            "Date (UTC)": row["DateUtc"].strftime("%Y-%m-%d %H:%M"),
+            "Round": int(row["RoundNumber"]),
+            "Home": home,
+            "Away": away,
+            "Pred Goals (H)": None if not pred else round(pred["GoalsH"], 2),
+            "Pred Goals (A)": None if not pred else round(pred["GoalsA"], 2),
+            "Pred Corners (H)": None if not pred else round(pred["CornersH"], 2),
+            "Pred Corners (A)": None if not pred else round(pred["CornersA"], 2),
+            "Pred SOT (H)": None if not pred else round(pred["SOTH"], 2),
+            "Pred SOT (A)": None if not pred else round(pred["SOTA"], 2),
+            "Pred Yellows (H)": None if not pred else round(pred["YellowH"], 2),
+            "Pred Yellows (A)": None if not pred else round(pred["YellowA"], 2),
+            "P(Home>Goals)%": None if not probs else int(round(probs["P(Home more Goals)"] * 100)),
+            "P(Home>Corners)%": None if not probs else int(round(probs["P(Home more Corners)"] * 100)),
+            "P(Home>SOT)%": None if not probs else int(round(probs["P(Home more SOT)"] * 100)),
+            "P(Home>Yellows)%": None if not probs else int(round(probs["P(Home more Yellows)"] * 100)),
+        })
+
+    pred_df = pd.DataFrame(rows)
+    st.subheader(f"Predictions for Round {selected_round}")
+    st.dataframe(pred_df, use_container_width=True)
+
+    st.caption(
+        "Notes: Predictions use per-match averages from your selected seasons. "
+        "Team name normalisation is best-effort; if a name can’t be matched to historical data, "
+        "predictions for that fixture are left blank."
+    )
