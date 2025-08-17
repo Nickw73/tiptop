@@ -276,7 +276,8 @@ def main():
             return
         fx["DateUtc"] = pd.to_datetime(fx["DateUtc"], utc=True, errors="coerce")
         fx = fx.dropna(subset=["DateUtc"])
-        now_utc = pd.Timestamp.utcnow().tz_localize("UTC")
+        # Use pd.Timestamp.now with tz to avoid tz_localize errors on certain pandas versions
+        now_utc = pd.Timestamp.now(tz="UTC")
         future_fx = fx[fx["DateUtc"] >= now_utc].copy()
         if future_fx.empty:
             st.info("No future fixtures found; showing all fixtures instead.")
