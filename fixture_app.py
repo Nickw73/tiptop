@@ -305,78 +305,106 @@ def main() -> None:
         )
 
     elif page == "Upcoming Fixtures":
-        # Upcoming fixtures page: show a list of fixtures and predictions
-        st.header("Upcoming Fixtures and Predictions")
+        """
+        Display upcoming fixtures for the 2025/26 Premier League season and
+        generate simple per‑game predictions. This section reads the fixture
+        schedule from a JSON file (``epl-2025.json``) that contains a record
+        for every match in the 2025/26 campaign. The JSON file should be
+        located in the same directory as this script. If the file is missing,
+        users will see an informative message.
+
+        For each round (1–38), users can select the round of interest. The
+        app lists the fixtures for that game week and computes predicted
+        values for goals, corners, shots on target and yellow cards. Predicted
+        values are calculated as the average of a team’s own per‑match
+        performance and their opponent’s conceded metrics across the selected
+        historical seasons. Probabilities show the chance that the home team
+        will have more of a given statistic, based on the predicted values.
+        """
+
+        st.header("Upcoming Fixtures and Predictions (2025/26)")
         st.markdown(
             """
-            This page lists upcoming Premier League fixtures (for demonstration purposes
-            a small sample list is used). For each fixture, the app pulls the
-            two relevant teams, calculates their per‑match averages for the selected
-            seasons, and then makes simple predictions for key match statistics.
-            Predicted values are calculated as the average of a team's own
-            performance and their opponent's conceded statistics. Probabilities
-            represent the proportion of each team's predicted value relative
-            to the total for that metric.
+            Select a game week to view the fixtures scheduled for that round
+            in the 2025/26 Premier League season. Predictions are based on
+            historical averages from the selected seasons above. If a team
+            does not appear in the historical data (e.g., newly promoted
+            clubs), predictions for that fixture will be omitted.
             """
         )
 
-        # Build the full fixture list from the raw match data. We rely on the
-        # raw_combined DataFrame loaded earlier, which contains "Date",
-        # "HomeTeam" and "AwayTeam" for every match. This avoids depending on
-        # the processed ``df`` in case it is missing the HomeAway flag.
-        if raw_combined is not None and not raw_combined.empty:
-            full_fixtures_df = raw_combined[["Date", "HomeTeam", "AwayTeam"]].copy()
-            full_fixtures_df["Date"] = full_fixtures_df["Date"].dt.date.astype(str)
-            full_fixtures_df = full_fixtures_df.sort_values("Date")
-
-            # Identify unique match dates (game weeks). Users can select a date to
-            # view predictions for that match day.
-            unique_dates = sorted(full_fixtures_df["Date"].unique())
-            if unique_dates:
-                selected_date = st.selectbox(
-                    "Select game week (date)", unique_dates, index=0
-                )
-                fixtures_df = full_fixtures_df[full_fixtures_df["Date"] == selected_date]
-            else:
-                selected_date = None
-                fixtures_df = full_fixtures_df.copy()
-
-            st.subheader("Fixtures for selected date")
-            st.dataframe(fixtures_df.reset_index(drop=True), use_container_width=True)
-        else:
-            st.info(
-                "No raw fixture data available. Please ensure the CSV files are present and correctly named."
+        # Attempt to load the 2025/26 fixture data from a local JSON file.
+        fixtures_path = Path(__file__).parent / "epl-2025.json"
+        if not fixtures_path.exists():
+            st.error(
+                "Fixture file for the 2025/26 season (epl-2025.json) is missing. "
+                "Please download the file and place it in the same directory as this script."
             )
-            fixtures_df = pd.DataFrame(columns=["Date", "HomeTeam", "AwayTeam"])  # empty fallback
+            return
+        try:
+            fixtures_data = pd.read_json(fixtures_path)
+        except Exception as e:
+            st.error(f"Error reading fixture file: {e}")
+            return
+        # Convert UTC date string to datetime and extract the date portion.
+        fixtures_data["Date"] = pd.to_datetime(fixtures_data["DateUtc"]).dt.date
+        # Ensure round numbers are integers for sorting and selection.
+        fixtures_data["RoundNumber"] = fixtures_data["RoundNumber"].astype(int)
 
-        # Compute predictions for each fixture on the selected date. If no date is
-        # selected, this will include all fixtures.
-        prediction_rows = []
-        for _, row in fixtures_df.iterrows():
-            home = row["HomeTeam"]
-            away = row["AwayTeam"]
-            date_str = row["Date"]
-            # Skip prediction if either team is not in our dataset
+        # Determine the current (upcoming) round based on today's date in London.
+        # Use the user's local timezone for comparison; fallback to UTC if tzinfo is missing.
+        today = pd.Timestamp.now(tz="Europe/London").date()
+        upcoming_matches = fixtures_data[fixtures_data["Date"] >= today]
+        if not upcoming_matches.empty:
+            default_round = int(upcoming_matches["RoundNumber"].min())
+        else:
+            # If all fixtures are in the past relative to today (unlikely mid‑season), default to round 1
+            default_round = 1
+        unique_rounds = sorted(fixtures_data["RoundNumber"].unique())
+
+        selected_round = st.selectbox(
+            "Select game week (round)",
+            options=unique_rounds,
+            index=unique_rounds.index(default_round) if default_round in unique_rounds else 0,
+            format_func=lambda x: f"Round {x}"
+        )
+
+        # Filter fixtures for the selected round and sort by date/time
+        fixtures_round = fixtures_data[fixtures_data["RoundNumber"] == selected_round].copy()
+        fixtures_round = fixtures_round.sort_values("DateUtc")
+
+        st.subheader(f"Fixtures for Round {selected_round}")
+        st.dataframe(
+            fixtures_round[["Date", "HomeTeam", "AwayTeam", "Location"]].reset_index(drop=True),
+            use_container_width=True,
+        )
+
+        # Generate predictions for each fixture in this round.
+        prediction_rows: list[dict[str, object]] = []
+        for _idx, match in fixtures_round.iterrows():
+            home = match["HomeTeam"]
+            away = match["AwayTeam"]
+            date_str = match["Date"].isoformat()
+            # If either team is not in our historical dataset, skip predictions.
             if home not in teams or away not in teams:
                 continue
             home_avg = get_team_average(df, home)
             away_avg = get_team_average(df, away)
 
-            # Predicted goals: average of own goals scored and opponent goals conceded
+            # Predicted goals per team
             pred_goals_home = (home_avg["GoalsScored"] + away_avg["GoalsConceded"]) / 2
             pred_goals_away = (away_avg["GoalsScored"] + home_avg["GoalsConceded"]) / 2
-            # Predicted corners won
+            # Predicted corners won per team
             pred_corners_home = (home_avg["CornersWon"] + away_avg["CornersConceded"]) / 2
             pred_corners_away = (away_avg["CornersWon"] + home_avg["CornersConceded"]) / 2
-            # Predicted shots on target
+            # Predicted shots on target per team
             pred_shots_home = (home_avg["ShotsOnTargetFor"] + away_avg["ShotsOnTargetAgainst"]) / 2
             pred_shots_away = (away_avg["ShotsOnTargetFor"] + home_avg["ShotsOnTargetAgainst"]) / 2
-            # Predicted yellow cards
+            # Predicted yellow cards per team
             pred_yellow_home = (home_avg["YellowFor"] + away_avg["YellowAgainst"]) / 2
             pred_yellow_away = (away_avg["YellowFor"] + home_avg["YellowAgainst"]) / 2
 
-            # Compute probabilities for each metric: probability that home team has
-            # more of the metric = predicted value / (sum of both teams).
+            # Compute probabilities for each metric
             def compute_probs(val1: float, val2: float) -> tuple[float, float]:
                 total = val1 + val2
                 if total <= 0:
@@ -406,12 +434,12 @@ def main() -> None:
             })
 
         if prediction_rows:
-            st.subheader("Predictions for fixtures on selected date")
+            st.subheader(f"Predictions for Round {selected_round}")
             predictions_df = pd.DataFrame(prediction_rows)
             st.dataframe(predictions_df, use_container_width=True)
         else:
             st.info(
-                "No predictions available: the fixtures list may contain teams not present in the selected seasons."
+                "No predictions available for this round (some teams may not be present in the selected seasons)."
             )
 
 
