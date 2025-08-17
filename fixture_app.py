@@ -301,7 +301,8 @@ def main():
                 avg_home = avg_away = None
             pred = None
             probs = {}
-            if avg_home and avg_away:
+            # Only compute predictions if both averages are present (avoid pandas truth-value ambiguity)
+            if avg_home is not None and avg_away is not None:
                 pred = metric_prediction(avg_home, avg_away)
                 probs = {
                     "P(Home more Goals)": sigmoid_prob(pred["GoalsH"], pred["GoalsA"]),
